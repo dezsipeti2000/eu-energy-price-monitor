@@ -15,10 +15,9 @@ from entsoe import EntsoePandasClient
 # --------------------------------------------------
 
 load_dotenv()
-
 def get_secret(secret_name: str):
     """
-    Reads secrets from local .env first.
+    Reads API keys from local .env first.
     If not found, reads from Streamlit Cloud secrets.
     """
     value = os.getenv(secret_name)
