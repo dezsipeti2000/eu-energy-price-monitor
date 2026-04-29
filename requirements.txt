@@ -1,0 +1,7 @@
+streamlit
+pandas
+plotly
+eurostat
+requests
+python-dotenv
+entsoe-py
