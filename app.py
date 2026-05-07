@@ -37,8 +37,8 @@ st.set_page_config(
 
 st.title("EU Energy Price Monitor")
 st.write(
-    "Near-live EU electricity price monitoring using ENTSO-E, "
-    "with Eurostat industrial energy price benchmarks."
+    "EU energy market monitoring using ENTSO-E electricity prices, "
+    "GIE gas storage data, Eurostat industrial benchmarks, and an experimental energy stress index."
 )
 
 # --------------------------------------------------
@@ -207,7 +207,7 @@ page = st.sidebar.radio(
         "GIE gas storage monitor",
         "Energy stress index",
         "Eurostat industrial energy prices",
-        "About this monitor"
+        "Modules / roadmap"
     ]
 )
 
@@ -903,39 +903,144 @@ if page == "Eurostat industrial energy prices":
 
 
 # --------------------------------------------------
-# Page 3: About
+# Page: Modules / roadmap
 # --------------------------------------------------
 
-if page == "About this monitor":
+if page == "Modules / roadmap":
 
-    st.header("About this EU Energy Price Monitor")
+    st.header("Modules and development roadmap")
 
     st.write(
-        "This dashboard is a beginner research prototype for monitoring energy-price pressure "
-        "in the European Union."
+        "This page summarizes the current modules of the EU Energy Price Monitor "
+        "and the next planned development steps."
     )
+
+    st.subheader("Implemented modules")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown(
+            """
+            ### ENTSO-E electricity prices
+            **Status:** active  
+            **Purpose:** near-live day-ahead electricity price monitoring  
+            **Output:** price trend, country comparison, ranking table, CSV export  
+            """
+        )
+
+        st.markdown(
+            """
+            ### GIE AGSI gas storage monitor
+            **Status:** active  
+            **Purpose:** EU gas storage risk monitoring  
+            **Output:** storage level, gas in storage, injection, withdrawal, CSV export  
+            """
+        )
+
+    with col2:
+        st.markdown(
+            """
+            ### Energy Stress Index
+            **Status:** active experimental module  
+            **Purpose:** combine electricity price pressure and gas storage conditions  
+            **Output:** 0–100 stress score and qualitative risk category  
+            """
+        )
+
+        st.markdown(
+            """
+            ### Eurostat industrial benchmarks
+            **Status:** active  
+            **Purpose:** official industrial electricity and gas price comparison  
+            **Output:** long-term country-level industrial price trends  
+            """
+        )
 
     st.subheader("Current data sources")
 
-    st.write(
-        "- ENTSO-E: near-live day-ahead wholesale electricity prices.\n"
-        "- Eurostat: official industrial / non-household electricity and gas price benchmarks."
+    sources_df = pd.DataFrame(
+        {
+            "Source": [
+                "ENTSO-E Transparency Platform",
+                "GIE AGSI",
+                "Eurostat"
+            ],
+            "Used for": [
+                "Day-ahead electricity prices",
+                "EU gas storage data",
+                "Industrial electricity and gas price benchmarks"
+            ],
+            "Update character": [
+                "Near-live / hourly-daily",
+                "Daily",
+                "Semi-annual official statistics"
+            ],
+            "Status": [
+                "Connected",
+                "Connected",
+                "Connected"
+            ]
+        }
     )
 
-    st.subheader("Why this matters")
+    st.dataframe(sources_df, use_container_width=True)
 
-    st.write(
-        "For energy-intensive industries, electricity and gas price volatility affects "
-        "production costs, procurement, investment decisions, competitiveness, and risk management."
+    st.subheader("Next development modules")
+
+    roadmap_df = pd.DataFrame(
+        {
+            "Priority": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6
+            ],
+            "Module": [
+                "EU ETS carbon price",
+                "TTF gas benchmark",
+                "Automatic alerts",
+                "Forecasting model",
+                "Sector exposure model",
+                "Dashboard design upgrade"
+            ],
+            "Why it matters": [
+                "Carbon cost is highly relevant for steel, cement, chemicals and power generation.",
+                "TTF is one of the most important gas price benchmarks in Europe.",
+                "Alerts turn the dashboard into a monitoring and decision-support tool.",
+                "Forecasting connects the monitor directly to econometric research.",
+                "Different sectors react differently to electricity, gas and carbon price shocks.",
+                "A cleaner interface makes the tool more professional for supervisors and companies."
+            ],
+            "Suggested status": [
+                "Next",
+                "Next",
+                "After price benchmarks",
+                "Later",
+                "Later",
+                "Continuous"
+            ]
+        }
     )
 
-    st.subheader("Next planned modules")
+    st.dataframe(roadmap_df, use_container_width=True)
 
-    st.write(
-        "1. Gas storage data from GIE AGSI.\n"
-        "2. EU ETS carbon price data.\n"
-        "3. TTF gas benchmark.\n"
-        "4. Energy stress index.\n"
-        "5. Automatic alerts.\n"
-        "6. Forecasting model."
+    st.subheader("Recommended next build order")
+
+    st.markdown(
+        """
+        1. **Add EU ETS carbon price**  
+        2. **Add TTF gas benchmark**  
+        3. **Improve the Energy Stress Index using historical percentiles**  
+        4. **Add automatic alerts**  
+        5. **Create sector-specific stress scores for steel, chemicals, cement, aluminium and fertilizer**  
+        6. **Add forecasting and scenario analysis**
+        """
+    )
+
+    st.info(
+        "The dashboard already contains the core monitoring structure. "
+        "The next major improvement should be adding market benchmarks: EU ETS and TTF gas."
     )
