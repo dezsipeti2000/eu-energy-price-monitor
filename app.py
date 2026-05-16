@@ -196,6 +196,188 @@ def load_gie_eu_storage(days: int = 60) -> pd.DataFrame:
     df = df.sort_values("gasDayStart")
 
     return df
+
+def parse_eex_number(value):
+    """
+    Converts EEX-style number formats into float.
+    Handles decimal comma and decimal point.
+    """
+    if pd.isna(value):
+        return None
+
+    text = str(value).strip()
+    text = text.replace("\u00a0", "")
+    text = text.replace(" ", "")
+
+    if text == "" or text.lower() in ["nan", "none"]:
+        return None
+
+    # Example: 1.234,56 -> 1234.56
+    if "," in text and "." in text:
+        text = text.replace(".", "").replace(",", ".")
+    else:
+        text = text.replace(",", ".")
+
+    return pd.to_numeric(text, errors="coerce")
+
+
+def prepare_manual_eex_dataframe(
+    raw_df: pd.DataFrame,
+    date_col: str,
+    price_col: str,
+    volume_col: str | None = None
+) -> pd.DataFrame:
+    """
+    Standardizes manually uploaded EEX CSV data into:
+    date, price_eur_tco2, volume
+    """
+
+    df = raw_df.copy()
+
+    df["date"] = pd.to_datetime(
+        df[date_col],
+        errors="coerce",
+        dayfirst=True
+    )
+    df["price_eur_tco2"] = df[price_col].apply(parse_eex_number)
+
+    if volume_col and volume_col != "None":
+        df["volume"] = df[volume_col].apply(parse_eex_number)
+    else:
+        df["volume"] = None
+
+    df = df.dropna(subset=["date", "price_eur_tco2"])
+    df = df.sort_values("date")
+
+    # If several records exist on the same day, keep the last price.
+    df = (
+        df.groupby("date", as_index=False)
+        .agg(
+            price_eur_tco2=("price_eur_tco2", "last"),
+            volume=("volume", "sum")
+        )
+    )
+
+    df["daily_return_pct"] = df["price_eur_tco2"].pct_change() * 100
+    df["ma_7"] = df["price_eur_tco2"].rolling(window=7).mean()
+    df["ma_30"] = df["price_eur_tco2"].rolling(window=30).mean()
+    df["source"] = "Manual EEX CSV upload"
+
+    return df
+
+
+def calculate_carbon_price_model(ets_df: pd.DataFrame) -> dict:
+    """
+    Calculates the full EU ETS carbon-price model:
+    latest price, change, volatility, percentile, z-score and stress score.
+    """
+
+    df = ets_df.copy().dropna(subset=["price_eur_tco2"])
+
+    if len(df) < 10:
+        raise ValueError("At least 10 valid observations are needed for the carbon model.")
+
+    latest_price = df.iloc[-1]["price_eur_tco2"]
+    previous_price = df.iloc[-2]["price_eur_tco2"]
+
+    daily_change = latest_price - previous_price
+    daily_change_pct = (daily_change / previous_price) * 100
+
+    average_price = df["price_eur_tco2"].mean()
+    min_price = df["price_eur_tco2"].min()
+    max_price = df["price_eur_tco2"].max()
+    std_price = df["price_eur_tco2"].std()
+
+    if std_price == 0:
+        z_score = 0
+    else:
+        z_score = (latest_price - average_price) / std_price
+
+    percentile = (df["price_eur_tco2"] <= latest_price).mean() * 100
+
+    daily_volatility = df["daily_return_pct"].std()
+    annualized_volatility = daily_volatility * (252 ** 0.5)
+
+    z_score_component = ((z_score + 2) / 4) * 100
+    z_score_component = max(0, min(100, z_score_component))
+
+    carbon_stress_score = 0.70 * percentile + 0.30 * z_score_component
+    carbon_stress_score = max(0, min(100, carbon_stress_score))
+
+    if carbon_stress_score < 25:
+        carbon_risk_category = "Low"
+    elif carbon_stress_score < 50:
+        carbon_risk_category = "Moderate"
+    elif carbon_stress_score < 75:
+        carbon_risk_category = "High"
+    else:
+        carbon_risk_category = "Very high"
+
+    return {
+        "latest_price": latest_price,
+        "previous_price": previous_price,
+        "daily_change": daily_change,
+        "daily_change_pct": daily_change_pct,
+        "average_price": average_price,
+        "min_price": min_price,
+        "max_price": max_price,
+        "std_price": std_price,
+        "z_score": z_score,
+        "percentile": percentile,
+        "daily_volatility": daily_volatility,
+        "annualized_volatility": annualized_volatility,
+        "carbon_stress_score": carbon_stress_score,
+        "carbon_risk_category": carbon_risk_category,
+    }
+
+
+def calculate_sector_carbon_costs(latest_carbon_price: float) -> pd.DataFrame:
+    """
+    Simple industrial carbon-cost model.
+
+    Emission intensities are illustrative placeholders.
+    Later they should be replaced with verified sector/company-level values.
+    """
+
+    sector_df = pd.DataFrame(
+        {
+            "Sector": [
+                "Blast furnace steel",
+                "Fertilizer / ammonia",
+                "Cement / clinker",
+                "Chemicals",
+                "Glass",
+                "Gas-fired power generation",
+                "Aluminium"
+            ],
+            "Illustrative emission intensity": [
+                1.80,
+                1.60,
+                0.75,
+                0.45,
+                0.35,
+                0.35,
+                0.20
+            ],
+            "Unit": [
+                "tCO₂ / t steel",
+                "tCO₂ / t ammonia",
+                "tCO₂ / t clinker",
+                "tCO₂ / t output",
+                "tCO₂ / t glass",
+                "tCO₂ / MWh",
+                "tCO₂ / t aluminium"
+            ]
+        }
+    )
+
+    sector_df["Estimated carbon cost"] = (
+        sector_df["Illustrative emission intensity"] * latest_carbon_price
+    )
+
+    sector_df["Estimated carbon cost"] = sector_df["Estimated carbon cost"].round(2)
+
+    return sector_df
 # --------------------------------------------------
 # Sidebar navigation
 # --------------------------------------------------
@@ -205,6 +387,7 @@ page = st.sidebar.radio(
     [
         "ENTSO-E live electricity prices",
         "GIE gas storage monitor",
+        "EEX EU ETS carbon price model",
         "Energy stress index",
         "Eurostat industrial energy prices",
         "Modules / roadmap"
@@ -537,6 +720,380 @@ if page == "GIE gas storage monitor":
 
     st.caption("Data source: GIE AGSI / Gas Infrastructure Europe.")
 
+# --------------------------------------------------
+# Page: EEX EU ETS carbon price model
+# --------------------------------------------------
+
+if page == "EEX EU ETS carbon price model":
+
+    st.header("EEX EU ETS carbon price model")
+
+    st.write(
+        "This module uses manually uploaded EEX EU ETS / EUA price data "
+        "to calculate a carbon-price stress signal and industrial carbon-cost exposure."
+    )
+
+    st.info(
+        "MVP mode: no paid EEX API is required. Download a CSV from the EEX Market Data Hub, "
+        "then upload it here. Later, this can be replaced with official EEX DataSource API access."
+    )
+
+    uploaded_files = st.file_uploader(
+        "Upload one or more EEX auction files",
+        type=["csv", "xlsx", "xls"],
+        accept_multiple_files=True
+    )
+    if not uploaded_files:
+        st.warning(
+            "Please upload one or more EEX auction files to run the EU ETS carbon price model."
+        )
+
+        st.markdown(
+            """
+            **Recommended files for the full model:**
+
+            Upload the yearly EEX files, for example:
+
+            - emission-spot-primary-market-auction-report-2012-data.xls
+            - emission-spot-primary-market-auction-report-2013-data.xls
+            - ...
+            - emission-spot-primary-market-auction-report-2025-data.xlsx
+
+            The app will combine them automatically into one long historical dataset.
+            """
+        )
+
+        st.stop()
+
+        st.markdown(
+            """
+            **Suggested workflow:**
+
+            1. Open the EEX Market Data Hub.
+            2. Select the relevant EU ETS / EUA product.
+            3. Download the available data as CSV.
+            4. Upload the CSV here.
+            5. Select the date and price columns.
+            """
+        )
+
+        st.stop()
+
+    raw_frames = []
+
+    for uploaded_file in uploaded_files:
+
+        try:
+            if uploaded_file.name.endswith((".xlsx", ".xls")):
+                temp_df = pd.read_excel(
+                    uploaded_file,
+                    sheet_name="Primary Market Auction",
+                    header=5
+                )
+            else:
+                temp_df = pd.read_csv(
+                    uploaded_file,
+                    sep=";",
+                    encoding="utf-8-sig",
+                    header=4
+                )
+
+            temp_df["source_file"] = uploaded_file.name
+            raw_frames.append(temp_df)
+
+        except Exception as e:
+            st.error(f"Could not read file: {uploaded_file.name}")
+            st.exception(e)
+
+    if not raw_frames:
+        st.error("None of the uploaded files could be read.")
+        st.stop()
+
+    raw_eex_df = pd.concat(raw_frames, ignore_index=True)
+
+    st.subheader("Raw uploaded EEX file preview")
+    st.dataframe(raw_eex_df.head(20), use_container_width=True)
+
+    columns = list(raw_eex_df.columns)
+
+    # Automatic column guesses
+    date_keywords = ["date", "tradedate", "tradingdate", "timestamp", "time"]
+    price_keywords = ["price", "settlement", "close", "last", "auction"]
+    volume_keywords = ["volume", "tradedvolume"]
+
+    def guess_column(columns, keywords):
+        for col in columns:
+            cleaned = str(col).lower().replace(" ", "").replace("_", "")
+            for keyword in keywords:
+                if keyword in cleaned:
+                    return col
+        return columns[0]
+
+    guessed_date_col = guess_column(columns, date_keywords)
+    guessed_price_col = guess_column(columns, price_keywords)
+
+    volume_options = ["None"] + columns
+    guessed_volume_col = "None"
+
+    for col in columns:
+        cleaned = str(col).lower().replace(" ", "").replace("_", "")
+        if any(keyword in cleaned for keyword in volume_keywords):
+            guessed_volume_col = col
+            break
+
+    st.subheader("Column mapping")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        date_col = st.selectbox(
+            "Date column",
+            columns,
+            index=columns.index(guessed_date_col)
+        )
+
+    with col2:
+        price_col = st.selectbox(
+            "Price column",
+            columns,
+            index=columns.index(guessed_price_col)
+        )
+
+    with col3:
+        volume_col = st.selectbox(
+            "Volume column",
+            volume_options,
+            index=volume_options.index(guessed_volume_col)
+        )
+
+    try:
+        eex_df = prepare_manual_eex_dataframe(
+            raw_df=raw_eex_df,
+            date_col=date_col,
+            price_col=price_col,
+            volume_col=volume_col
+        )
+    except Exception as e:
+        st.error("Could not prepare the EEX dataset. Please check the selected columns.")
+        st.exception(e)
+        st.stop()
+
+    if eex_df.empty:
+        st.error("The processed EEX dataset is empty.")
+        st.stop()
+
+    try:
+        carbon_model = calculate_carbon_price_model(eex_df)
+    except Exception as e:
+        st.error("Could not calculate the carbon price model.")
+        st.exception(e)
+        st.stop()
+
+    latest_price = carbon_model["latest_price"]
+    daily_change = carbon_model["daily_change"]
+    daily_change_pct = carbon_model["daily_change_pct"]
+    average_price = carbon_model["average_price"]
+    min_price = carbon_model["min_price"]
+    max_price = carbon_model["max_price"]
+    z_score = carbon_model["z_score"]
+    percentile = carbon_model["percentile"]
+    annualized_volatility = carbon_model["annualized_volatility"]
+    carbon_stress_score = carbon_model["carbon_stress_score"]
+    carbon_risk_category = carbon_model["carbon_risk_category"]
+
+    st.subheader("Carbon market snapshot")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "Latest EUA price",
+            f"{latest_price:.2f} EUR/tCO₂",
+            delta=f"{daily_change:.2f} EUR"
+        )
+
+    with col2:
+        st.metric(
+            "Daily change",
+            f"{daily_change_pct:.2f} %"
+        )
+
+    with col3:
+        st.metric(
+            "Carbon stress score",
+            f"{carbon_stress_score:.1f} / 100"
+        )
+
+    with col4:
+        st.metric(
+            "Risk category",
+            carbon_risk_category
+        )
+
+    col5, col6, col7, col8 = st.columns(4)
+
+    with col5:
+        st.metric(
+            "Average price",
+            f"{average_price:.2f} EUR/tCO₂"
+        )
+
+    with col6:
+        st.metric(
+            "Historical percentile",
+            f"{percentile:.1f} %"
+        )
+
+    with col7:
+        st.metric(
+            "Z-score",
+            f"{z_score:.2f}"
+        )
+
+    with col8:
+        st.metric(
+            "Annualized volatility",
+            f"{annualized_volatility:.2f} %"
+        )
+
+    st.subheader("EUA carbon price trend")
+
+    fig_price = px.line(
+        eex_df,
+        x="date",
+        y="price_eur_tco2",
+        markers=True,
+        title="EEX EUA carbon price trend"
+    )
+
+    fig_price.add_scatter(
+        x=eex_df["date"],
+        y=eex_df["ma_7"],
+        mode="lines",
+        name="7-day moving average"
+    )
+
+    fig_price.add_scatter(
+        x=eex_df["date"],
+        y=eex_df["ma_30"],
+        mode="lines",
+        name="30-day moving average"
+    )
+
+    fig_price.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Price [EUR/tCO₂]"
+    )
+
+    st.plotly_chart(fig_price, use_container_width=True)
+
+    st.subheader("Carbon stress model components")
+
+    z_score_component = ((z_score + 2) / 4) * 100
+    z_score_component = max(0, min(100, z_score_component))
+
+    stress_components_df = pd.DataFrame(
+        {
+            "Component": [
+                "Historical percentile",
+                "Z-score component"
+            ],
+            "Value": [
+                percentile,
+                z_score_component
+            ],
+            "Weight": [
+                0.70,
+                0.30
+            ]
+        }
+    )
+
+    stress_components_df["Weighted contribution"] = (
+        stress_components_df["Value"] * stress_components_df["Weight"]
+    )
+
+    st.dataframe(
+        stress_components_df.round(2),
+        use_container_width=True
+    )
+
+    fig_stress = px.bar(
+        stress_components_df,
+        x="Component",
+        y="Weighted contribution",
+        title="Carbon stress score decomposition"
+    )
+
+    fig_stress.update_layout(
+        xaxis_title="Component",
+        yaxis_title="Weighted contribution"
+    )
+
+    st.plotly_chart(fig_stress, use_container_width=True)
+
+    st.subheader("Industrial carbon-cost impact model")
+
+    sector_carbon_costs = calculate_sector_carbon_costs(latest_price)
+
+    st.dataframe(
+        sector_carbon_costs.sort_values("Estimated carbon cost", ascending=False),
+        use_container_width=True
+    )
+
+    fig_sector = px.bar(
+        sector_carbon_costs.sort_values("Estimated carbon cost", ascending=False),
+        x="Sector",
+        y="Estimated carbon cost",
+        title="Estimated carbon-cost impact by sector"
+    )
+
+    fig_sector.update_layout(
+        xaxis_title="Sector",
+        yaxis_title="Estimated carbon cost [EUR per unit]"
+    )
+
+    st.plotly_chart(fig_sector, use_container_width=True)
+
+    st.subheader("Interpretation")
+
+    if carbon_risk_category == "Low":
+        st.success(
+            f"The current carbon stress score is **{carbon_stress_score:.1f}/100**, "
+            f"which indicates a **{carbon_risk_category}** carbon-cost environment."
+        )
+    elif carbon_risk_category == "Moderate":
+        st.warning(
+            f"The current carbon stress score is **{carbon_stress_score:.1f}/100**, "
+            f"which indicates a **{carbon_risk_category}** carbon-cost environment."
+        )
+    else:
+        st.error(
+            f"The current carbon stress score is **{carbon_stress_score:.1f}/100**, "
+            f"which indicates a **{carbon_risk_category}** carbon-cost environment."
+        )
+
+    st.write(
+        f"The latest carbon price is **{latest_price:.2f} EUR/tCO₂**. "
+        f"Within the uploaded EEX data window, this value is at the "
+        f"**{percentile:.1f}th percentile**. "
+        "This means the model evaluates the current price relative to its recent historical distribution."
+    )
+
+    csv_processed = eex_df.to_csv(index=False).encode("utf-8")
+
+    st.download_button(
+        label="Download processed EEX carbon model data as CSV",
+        data=csv_processed,
+        file_name=f"processed_eex_carbon_model_{datetime.now().date()}.csv",
+        mime="text/csv"
+    )
+
+    with st.expander("Show processed EEX data"):
+        st.dataframe(
+            eex_df.sort_values("date", ascending=False),
+            use_container_width=True
+        )
 # --------------------------------------------------
 # Page: Energy Stress Index
 # --------------------------------------------------
@@ -1015,7 +1572,7 @@ if page == "Modules / roadmap":
                 "A cleaner interface makes the tool more professional for supervisors and companies."
             ],
             "Suggested status": [
-                "Next",
+                "Active / manual EEX MVP",
                 "Next",
                 "After price benchmarks",
                 "Later",
